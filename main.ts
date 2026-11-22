@@ -1,41 +1,65 @@
-// A working best-game-01 entry (Node 22, standard library only): the game is this directory's
-// game/ folder, plain static files a desktop browser loads offline (game/index.html and its ES
-// modules, no library and no network request), and the program hands it in. It copies game/ and
-// screenshots/ from beside this file to /output and writes /output/dossier.json, the summary the
-// judge reads, with the vendored make.fun library. A starting point, not a winner: Block Dodger, a
-// plain 2D canvas game where a paddle dodges falling blocks and catches coins, with a title screen,
-// score, lives and levels, game over and restart, flat colours and no sound. Build your own game
-// (any genre, any library you vendor under game/, or none), put your 3 or 4 PNG or JPEG screenshots
-// in screenshots/ (the first by name is the cover) and run it.
+// VAULTFALL — The Meridian Heist: hand-in program for the make.fun heist-game bounty.
 //
-// Serve it locally with `node serve.ts`, then open http://localhost:8080.
-// Outside the grader's container, MAKEFUN_OUTPUT_DIR stands in for /output:
-//   mkdir -p out && MAKEFUN_OUTPUT_DIR=out node main.ts
+// What this file does, in order:
+//   1. Works out where the judge's bundle goes (MAKEFUN_OUTPUT_DIR, /output by default).
+//   2. Stages the playable game (game/) and the screenshot set (screenshots/) into it.
+//   3. Walks the staged game tree and prints a one-line inventory summary, so a human
+//      running this by hand can see at a glance what is about to be handed in.
+//   4. Asks the vendored make.fun library to summarise the bundle into dossier.json,
+//      under the scorer's published size caps, and writes that file next to the game.
+//
+// The game itself is plain static files (game/index.html plus its ES modules): no build
+// step, no network, nothing to install. Run `node serve.ts` to play it locally.
 
-import { cpSync, existsSync, mkdirSync, writeFileSync } from 'node:fs';
+import { cpSync, existsSync, mkdirSync, readdirSync, statSync, writeFileSync } from 'node:fs';
 import { join } from 'node:path';
 import { fileURLToPath } from 'node:url';
 import { buildDossier } from './vendor/makefun-game.ts';
 
-const here = fileURLToPath(new URL('.', import.meta.url));
-const out = process.env.MAKEFUN_OUTPUT_DIR ?? '/output';
+// The scorer's ceilings, restated once so the hand-in below reads plainly:
+// at most 160 KiB of outlined text, at most 4 screenshots of at most 256 KiB each,
+// at most 993 game files totalling at most 48 MiB, and no game path over 1000 bytes.
+const HAND_IN_LIMITS = {
+  text_max_bytes: 163840,
+  screenshots: { max: 4, max_bytes: 262144 },
+  game_max_files: 993,
+  game_max_bytes: 50331648,
+  game_path_max_bytes: 1000,
+};
 
-mkdirSync(out, { recursive: true });
-cpSync(join(here, 'game'), join(out, 'game'), { recursive: true });
-mkdirSync(join(out, 'screenshots'), { recursive: true });
-if (existsSync(join(here, 'screenshots'))) cpSync(join(here, 'screenshots'), join(out, 'screenshots'), { recursive: true });
+const ownDir = fileURLToPath(new URL('.', import.meta.url));
+const targetDir = process.env.MAKEFUN_OUTPUT_DIR ?? '/output';
 
-// The scorer's own caps (reference/gate.json): only text_max_bytes shapes the bytes; the others refuse an entry the
-// scorer would refuse (more than 4 screenshots or one over 256 KiB; more than 993 files in game/ or 48 MiB of game
-// files, in all, or a path under game/ over 1000 bytes: game/ counts beside /output's own 1000-entry cap, its
-// screenshots/ and dossier.json).
-writeFileSync(
-  join(out, 'dossier.json'),
-  buildDossier(out, {
-    text_max_bytes: 163840,
-    screenshots: { max: 4, max_bytes: 262144 },
-    game_max_files: 993,
-    game_max_bytes: 50331648,
-    game_path_max_bytes: 1000,
-  }),
-);
+// Copy one sibling folder of this file into the bundle, when it exists.
+function stageFolder(name) {
+  const from = join(ownDir, name);
+  if (existsSync(from)) {
+    cpSync(from, join(targetDir, name), { recursive: true });
+  }
+}
+
+// Recursively list every file under a directory as { path, bytes } entries.
+function inventory(dir, prefix = '') {
+  const found = [];
+  for (const entry of readdirSync(dir, { withFileTypes: true })) {
+    const rel = prefix === '' ? entry.name : `${prefix}/${entry.name}`;
+    const full = join(dir, entry.name);
+    if (entry.isDirectory()) {
+      found.push(...inventory(full, rel));
+    } else {
+      found.push({ path: rel, bytes: statSync(full).size });
+    }
+  }
+  return found;
+}
+
+mkdirSync(targetDir, { recursive: true });
+stageFolder('game');
+mkdirSync(join(targetDir, 'screenshots'), { recursive: true });
+stageFolder('screenshots');
+
+const staged = inventory(join(targetDir, 'game'));
+const totalBytes = staged.reduce((sum, file) => sum + file.bytes, 0);
+console.log(`vaultfall hand-in: ${staged.length} game files, ${totalBytes} bytes staged`);
+
+writeFileSync(join(targetDir, 'dossier.json'), buildDossier(targetDir, HAND_IN_LIMITS));
